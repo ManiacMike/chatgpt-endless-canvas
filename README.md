@@ -1,4 +1,4 @@
-# ChatGPT Endless Image Gen
+# ChatGPT Endless Canvas
 
 > ### 🆓 Burns zero Codex / API quota
 > An infinite-canvas image board that generates through the **ChatGPT web app**
@@ -54,8 +54,8 @@ results from earlier chats can never be grabbed).
 ## Quick start
 
 ```bash
-git clone https://github.com/<you>/chatgpt-endless-image-gen.git
-cd chatgpt-endless-image-gen
+git clone https://github.com/<you>/chatgpt-endless-canvas.git
+cd chatgpt-endless-canvas
 
 # 1. one-time: install playwright into a venv (no `playwright install` needed)
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
@@ -105,7 +105,7 @@ mkdir -p ~/.claude/skills
 cp -r skills/chatgpt-image ~/.claude/skills/
 ```
 
-If you cloned somewhere other than `~/Workspace/chatgpt-endless-image-gen`,
+If you cloned somewhere other than `~/Workspace/chatgpt-endless-canvas`,
 set `CHATGPT_IMAGE_GEN_HOME=/path/to/clone` in your shell profile (the skill
 falls back to the default path).
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ChatGPT Endless Image Gen — local infinite-canvas board.
+"""ChatGPT Endless Canvas — local infinite-canvas board.
 
 Serves board.html (a pan/zoom canvas) and watches the ACTIVE board's
 directory: any image dropped into it shows up on the board within ~2s. Pair

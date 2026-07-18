@@ -5,7 +5,7 @@ description: Generate images through the ChatGPT web app (chatgpt.com) via a loc
 
 # ChatGPT image generation (board-first)
 
-Project home: `${CHATGPT_IMAGE_GEN_HOME:-~/Workspace/chatgpt-endless-image-gen}`
+Project home: `${CHATGPT_IMAGE_GEN_HOME:-~/Workspace/chatgpt-endless-canvas}`
 (referred to as `$PROJ` below — resolve it once per session). Data root:
 `~/Documents/chatgpt-endless-image-gen/`.
 
