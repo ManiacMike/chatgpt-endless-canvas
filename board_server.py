@@ -26,6 +26,12 @@ launch-chrome-debug.sh logged into chatgpt.com. Run:
 
     python3 board_server.py [--port 8090] [--dir path/to/single/board]
 
+If --port is taken by a program that is not this server (checked via
+GET /api/health), the next ports are tried (--port-tries, default 20).
+GET /api/health reports app/version/project/python/pid/port so launchers can
+verify identity; pid+port also land in <data root>/server.json. Unfinished
+jobs persist to <data root>/jobs.json and are requeued on restart.
+
 --dir (or BOARD_DIR) forces single-board mode on that directory, bypassing
 the registry — kept for scripted use.
 """
@@ -43,10 +49,17 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
+APP = "chatgpt-endless-canvas"   # identity reported by /api/health — lets
+VERSION = "1.1.0"                # launchers tell this server apart from
+                                 # whatever else answers on the port
+BOUND_PORT = None                # actual port after bind (may differ from --port)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_ROOT = os.path.expanduser(
     os.environ.get("IMAGE_GEN_DATA", "~/Documents/chatgpt-endless-image-gen"))
 REGISTRY_PATH = os.path.join(DATA_ROOT, "boards.json")
+JOBS_PATH = os.path.join(DATA_ROOT, "jobs.json")
+SERVER_PATH = os.path.join(DATA_ROOT, "server.json")
 GEN_SCRIPT = os.path.join(HERE, "generate_chatgpt_image.py")
 VENV_PY = os.path.join(HERE, ".venv", "bin", "python")
 PYTHON = VENV_PY if os.path.exists(VENV_PY) else sys.executable
@@ -87,6 +100,39 @@ def _write_json(path, data):
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, ensure_ascii=False)
     os.replace(tmp, path)
+
+
+def _save_jobs():
+    """Persist job history/queue so a restart can resume. JOBS_LOCK held."""
+    try:
+        os.makedirs(DATA_ROOT, exist_ok=True)
+        _write_json(JOBS_PATH, JOBS[-500:])
+    except OSError:
+        pass
+
+
+def _load_jobs():
+    """Reload job history and re-enqueue jobs a previous run never finished.
+    Only call after this process owns the port — two live servers requeuing
+    the same jobs.json would double-run everything."""
+    saved = _read_json(JOBS_PATH, [])
+    if not isinstance(saved, list):
+        return
+    with JOBS_LOCK:
+        JOBS.extend(j for j in saved if isinstance(j, dict))
+        interrupted = [j for j in JOBS
+                       if j.get("status") in ("queued", "waiting", "running")]
+        for i, job in enumerate(interrupted):
+            job["status"] = "queued"
+            job["requeued"] = True
+            # keep batch spacing on requeue, but let the first job go at once
+            job["delaySec"] = 0 if i == 0 else random.randint(BATCH_MIN, BATCH_MAX)
+        if interrupted:
+            _save_jobs()
+    for job in interrupted:
+        JOB_Q.put(job)
+    if interrupted:
+        print(f"requeued {len(interrupted)} interrupted job(s)", flush=True)
 
 
 def _new_board_dir():
@@ -273,19 +319,23 @@ def _worker():
             with JOBS_LOCK:
                 job["status"] = "waiting"
                 job["resumeAt"] = time.time() + delay
+                _save_jobs()
             time.sleep(delay)
         with JOBS_LOCK:
             job["status"] = "running"
             job["startedAt"] = time.time()
+            _save_jobs()
         try:
             out = _run_job(job)
             with JOBS_LOCK:
                 job["status"] = "done"
                 job["output"] = out
+                _save_jobs()
         except Exception as exc:  # noqa: BLE001
             with JOBS_LOCK:
                 job["status"] = "error"
                 job["error"] = str(exc)[:500]
+                _save_jobs()
 
 
 # -- http ----------------------------------------------------------------------
@@ -297,6 +347,13 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path in ("/", "/index.html"):
             self._send_file(os.path.join(HERE, "board.html"), "text/html; charset=utf-8")
+        elif path == "/api/health":
+            # identity endpoint: lets start.sh & the skill verify that whatever
+            # answers on this port is THIS project (not e.g. a stale pre-rename
+            # copy that also serves /api/state)
+            self._send_json({"app": APP, "version": VERSION, "project": HERE,
+                             "python": PYTHON, "pid": os.getpid(),
+                             "port": BOUND_PORT, "dataRoot": DATA_ROOT})
         elif path == "/api/state":
             board = _active_board()
             with JOBS_LOCK:
@@ -377,6 +434,7 @@ class Handler(BaseHTTPRequestHandler):
                        "dir": board["dir"], "status": "queued",
                        "createdAt": time.time()}
                 JOBS.append(job)
+                _save_jobs()
             JOB_Q.put(job)
             self._send_json(job)
         elif path == "/api/generate":
@@ -411,6 +469,7 @@ class Handler(BaseHTTPRequestHandler):
                            "createdAt": time.time()}
                     JOBS.append(job)
                     jobs.append(job)
+                _save_jobs()
             for job in jobs:
                 JOB_Q.put(job)
             self._send_json({"ok": True, "count": len(jobs), "jobs": jobs})
@@ -563,9 +622,36 @@ class Handler(BaseHTTPRequestHandler):
             sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
 
+def _probe_health(port):
+    """Health JSON of whatever is listening on port, or None."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/health", timeout=2) as r:
+            data = json.load(r)
+            return data if isinstance(data, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _write_server_file(port):
+    """Drop pid/port/project info so launchers can find and manage us."""
+    try:
+        os.makedirs(DATA_ROOT, exist_ok=True)
+        _write_json(SERVER_PATH, {"app": APP, "version": VERSION,
+                                  "pid": os.getpid(), "port": port,
+                                  "project": HERE, "python": PYTHON,
+                                  "startedAt": time.time()})
+    except OSError:
+        pass
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=int(os.environ.get("BOARD_PORT", "8090")))
+    ap.add_argument("--port-tries", type=int,
+                    default=int(os.environ.get("BOARD_PORT_TRIES", "20")),
+                    help="ports to try upward from --port when taken by other programs")
     ap.add_argument("--dir", default=os.environ.get("BOARD_DIR"),
                     help="single-board mode: watch exactly this directory")
     args = ap.parse_args()
@@ -579,27 +665,39 @@ def main():
         _load_registry()  # ensure registry + default board exist
         where = f"registry {REGISTRY_PATH}"
 
-    threading.Thread(target=_worker, daemon=True).start()
-    try:
-        srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    except OSError as exc:
-        import errno
-        import urllib.request
-        if exc.errno != errno.EADDRINUSE:
-            raise
-        # Port taken — if it's another board instance, that's success for an
-        # idempotent caller; if it's some other program, fail loudly.
+    # Bind, walking up from --port. A taken port is only "already running" if
+    # /api/health identifies OUR app — anything else (an old pre-rename copy,
+    # an unrelated program) gets skipped and we take the next port.
+    import errno
+    srv = None
+    for port in range(args.port, args.port + max(1, args.port_tries)):
         try:
-            with urllib.request.urlopen(
-                    f"http://127.0.0.1:{args.port}/api/state", timeout=2) as r:
-                json.load(r)
-            print(f"board already running: http://127.0.0.1:{args.port}", flush=True)
-            sys.exit(0)
-        except Exception:  # noqa: BLE001
-            print(f"port {args.port} is taken by something else — "
-                  f"use BOARD_PORT/--port to pick another", file=sys.stderr)
-            sys.exit(1)
-    print(f"board: http://127.0.0.1:{args.port}  ({where})", flush=True)
+            srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            break
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            health = _probe_health(port)
+            if health and health.get("app") == APP:
+                print(f"board already running: http://127.0.0.1:{port}  "
+                      f"(pid {health.get('pid')}, {health.get('project')})",
+                      flush=True)
+                sys.exit(0)
+            print(f"port {port} is taken by another program — trying {port + 1}",
+                  file=sys.stderr, flush=True)
+    if srv is None:
+        print(f"no free port in {args.port}-{args.port + args.port_tries - 1} — "
+              f"use BOARD_PORT/--port to pick another range", file=sys.stderr)
+        sys.exit(1)
+
+    global BOUND_PORT
+    BOUND_PORT = srv.server_address[1]
+    _write_server_file(BOUND_PORT)
+    # Requeue + worker only once we own the port: a second instance doing this
+    # while the first is alive would double-run every unfinished job.
+    _load_jobs()
+    threading.Thread(target=_worker, daemon=True).start()
+    print(f"board: http://127.0.0.1:{BOUND_PORT}  ({where})", flush=True)
     srv.serve_forever()
 
 

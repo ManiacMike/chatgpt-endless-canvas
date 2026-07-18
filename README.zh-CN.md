@@ -55,7 +55,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 bash launch-chrome-debug.sh
 
 # 3. 启动画板（幂等；nohup 脱离终端存活）
-bash start.sh                      # → http://127.0.0.1:8090
+bash start.sh                      # 输出实际地址（8090 被占则自动顺延）
 ```
 
 数据在 `~/Documents/chatgpt-endless-image-gen/`：`boards.json` 是画布注册表；
@@ -101,7 +101,8 @@ cp -r skills/chatgpt-image ~/.claude/skills/
 
 | 环境变量 | 默认 | 含义 |
 |---|---|---|
-| `BOARD_PORT` | `8090` | 画板端口 |
+| `BOARD_PORT` | `8090` | 画板端口（被其他程序占用时自动顺延，靠 `/api/health` 识别自家服务） |
+| `BOARD_PORT_TRIES` | `20` | 从 `BOARD_PORT` 起最多顺延的端口数 |
 | `IMAGE_GEN_DATA` | `~/Documents/chatgpt-endless-image-gen` | 数据根目录 |
 | `CHATGPT_CDP_URL` | `http://127.0.0.1:9222` | Chrome 调试地址 |
 | `BATCH_INTERVAL` | `30-120` | 批量任务随机间隔（秒） |

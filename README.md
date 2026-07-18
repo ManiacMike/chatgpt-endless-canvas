@@ -64,7 +64,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 bash launch-chrome-debug.sh
 
 # 3. start the board (idempotent; survives the terminal via nohup)
-bash start.sh                      # → http://127.0.0.1:8090
+bash start.sh                      # prints the actual url (8090, or next free port)
 ```
 
 Data lives in `~/Documents/chatgpt-endless-image-gen/` — `boards.json` is the
@@ -113,7 +113,8 @@ falls back to the default path).
 
 | Env | Default | Meaning |
 |---|---|---|
-| `BOARD_PORT` | `8090` | board server port |
+| `BOARD_PORT` | `8090` | board server port (skips ports taken by other programs — see `/api/health`) |
+| `BOARD_PORT_TRIES` | `20` | how many ports to try upward from `BOARD_PORT` |
 | `IMAGE_GEN_DATA` | `~/Documents/chatgpt-endless-image-gen` | data root |
 | `CHATGPT_CDP_URL` | `http://127.0.0.1:9222` | Chrome debug endpoint |
 | `BATCH_INTERVAL` | `30-120` | random pause (s) between batch jobs |

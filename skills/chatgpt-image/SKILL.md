@@ -9,6 +9,18 @@ Project home: `${CHATGPT_IMAGE_GEN_HOME:-~/Workspace/chatgpt-endless-canvas}`
 (referred to as `$PROJ` below — resolve it once per session). Data root:
 `~/Documents/chatgpt-endless-image-gen/`.
 
+**Bootstrap (skill install ≠ project install).** This file only teaches the
+workflow; the project code + venv must exist at `$PROJ`. Check once per
+session, and set it up if missing:
+
+```bash
+[ -f "$PROJ/board_server.py" ] || {
+  git clone https://github.com/ManiacMike/chatgpt-endless-canvas.git "$PROJ" &&
+  python3 -m venv "$PROJ/.venv" &&
+  "$PROJ/.venv/bin/pip" install -r "$PROJ/requirements.txt"
+}
+```
+
 **Core rule: submit ALL generation requests through the board server API**
 (`POST /api/generate`) instead of invoking the Python script directly — the
 server serializes jobs, spaces batches with random pauses (rate-limit
@@ -36,9 +48,18 @@ script directly only as a fallback when the server cannot run, or for
    bash $PROJ/start.sh
    ```
 
-   Then `open http://127.0.0.1:8090` if the user doesn't have the board open.
+   It prints the ACTUAL url (`board started: http://127.0.0.1:<port>`) — the
+   port may NOT be 8090: ports occupied by other programs (including stale
+   pre-rename copies of this project) are skipped automatically. Use the
+   printed url as `$BOARD` for ALL API calls below, and `open $BOARD` if the
+   user doesn't have the board open. To re-discover it later,
+   `GET /api/health` must return `"app": "chatgpt-endless-canvas"` (also in
+   `~/Documents/chatgpt-endless-image-gen/server.json` alongside pid/port) —
+   a port that answers `/api/state` but not `/api/health` is NOT this server.
    Do NOT run board_server.py with run_in_background — that ties the server to
    this session. Log: `~/Documents/chatgpt-endless-image-gen/board.log`.
+   Unfinished jobs survive a server restart (persisted + requeued), so if the
+   environment kills the detached process, just rerun start.sh.
 
 3. **Submit** (`POST /api/generate`, pick by scenario):
 
@@ -81,7 +102,8 @@ scheduled batch). Lineage: solid "↳ 改自" (edit), dashed "☆ 参考…风�
 ## Fallback: direct script (server unusable only)
 
 ```bash
-$PROJ/.venv/bin/python $PROJ/generate_chatgpt_image.py \
+PY="$PROJ/.venv/bin/python"; [ -x "$PY" ] || PY=python3   # needs playwright
+"$PY" $PROJ/generate_chatgpt_image.py \
   --prompt "..." --output /abs/path/out.png \
   [--reference ref.png] [--timeout 240] [--grab-only]
 ```
@@ -101,6 +123,7 @@ with `--grab-only` (pass any placeholder `--prompt`).
 - **All selectors failing** → ChatGPT web redesign; update `_find_composer` /
   `_submit` / `_IMAGE_JS` in `generate_chatgpt_image.py`.
 
-Env knobs: `BOARD_PORT` (8090), `IMAGE_GEN_DATA` (data root),
-`CHATGPT_CDP_URL` (9222), `BATCH_INTERVAL` ("30-120"), `BOARD_DIR`
-(single-board mode), `CHATGPT_IMAGE_GEN_HOME` (project location).
+Env knobs: `BOARD_PORT` (8090, auto-increments if taken),
+`BOARD_PORT_TRIES` (20), `IMAGE_GEN_DATA` (data root), `CHATGPT_CDP_URL`
+(9222), `BATCH_INTERVAL` ("30-120"), `BOARD_DIR` (single-board mode),
+`CHATGPT_IMAGE_GEN_HOME` (project location).
