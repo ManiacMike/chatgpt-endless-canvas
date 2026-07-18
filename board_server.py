@@ -32,6 +32,12 @@ GET /api/health reports app/version/project/python/pid/port so launchers can
 verify identity; pid+port also land in <data root>/server.json. Unfinished
 jobs persist to <data root>/jobs.json and are requeued on restart.
 
+Generation runs on BOARD_WORKERS (default 3) parallel workers; each drives its
+own dedicated ChatGPT tab (generate_chatgpt_image.py --tab-slot). Every job
+records the chat's conversation uuid (jobs[].conversationId) — that's its
+stable identity on the ChatGPT side; a job interrupted mid-run is first
+recovered from its conversation (--grab-only) before being regenerated.
+
 --dir (or BOARD_DIR) forces single-board mode on that directory, bypassing
 the registry — kept for scripted use.
 """
@@ -50,7 +56,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 APP = "chatgpt-endless-canvas"   # identity reported by /api/health — lets
-VERSION = "1.1.0"                # launchers tell this server apart from
+VERSION = "1.2.0"                # launchers tell this server apart from
                                  # whatever else answers on the port
 BOUND_PORT = None                # actual port after bind (may differ from --port)
 
@@ -80,6 +86,13 @@ try:
 except ValueError:
     BATCH_MIN, BATCH_MAX = 30, 120
 DRY_RUN = bool(os.environ.get("BOARD_DRY_RUN"))  # tests: copy instead of generate
+
+# Parallel generation workers. Each worker drives its own dedicated ChatGPT
+# tab (--tab-slot), so up to N images generate at once in the debug Chrome.
+try:
+    WORKERS = max(1, int(os.environ.get("BOARD_WORKERS", "3")))
+except ValueError:
+    WORKERS = 3
 
 STATE_LOCK = threading.Lock()   # guards the json files against handler/worker races
 JOBS_LOCK = threading.Lock()
@@ -217,7 +230,7 @@ def _spot_near(layout, ppos):
     return None
 
 
-def _run_job(job):
+def _run_job(job, slot=0):
     board_dir = job["dir"]
     parent = job.get("parent") or ""
     kind = job.get("kind", "edit")
@@ -269,20 +282,60 @@ def _run_job(job):
                     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
                     "nGNiYAAAAAkAAxkR2eQAAAAASUVORK5CYII="))
     else:
-        cmd = [PYTHON, GEN_SCRIPT,
-               "--prompt", prompt,
-               "--output", out_path,
-               "--timeout", "420",
-               "--prompt-prefix", prefix]
-        if parent:
-            cmd += ["--reference", os.path.join(board_dir, parent)]
+        meta_path = out_path + ".meta.json"
+
+        def _record_conv():
+            """Pull the conversation uuid the script captured (written to the
+            meta sidecar as soon as the chat exists) onto the job — even on
+            failure, so a later requeue can recover from that conversation."""
+            info = _read_json(meta_path, {})
+            try:
+                os.remove(meta_path)
+            except OSError:
+                pass
+            cid = info.get("conversationId") if isinstance(info, dict) else None
+            if cid:
+                with JOBS_LOCK:
+                    job["conversationId"] = cid
+                    _save_jobs()
+
+        common = ["--tab-slot", str(slot)]
         cdp = os.environ.get("CHATGPT_CDP_URL")
         if cdp:
-            cmd += ["--cdp-url", cdp]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=500)
-        if proc.returncode != 0 or not os.path.exists(out_path):
-            tail = "\n".join((proc.stderr or "").strip().splitlines()[-3:])
-            raise RuntimeError(tail or "生成脚本失败（无输出）")
+            common += ["--cdp-url", cdp]
+
+        recovered = False
+        if job.get("requeued") and job.get("conversationId"):
+            # The previous server died after this job's prompt was already
+            # sent — the image may be sitting finished in that conversation.
+            # Grab it instead of paying for a second generation.
+            try:
+                proc = subprocess.run(
+                    [PYTHON, GEN_SCRIPT, "--prompt", "recover", "--grab-only",
+                     "--conversation", job["conversationId"],
+                     "--output", out_path, "--timeout", "60"] + common,
+                    capture_output=True, text=True, timeout=180)
+                recovered = proc.returncode == 0 and os.path.exists(out_path)
+            except (subprocess.TimeoutExpired, OSError):
+                recovered = False
+
+        if not recovered:
+            cmd = [PYTHON, GEN_SCRIPT,
+                   "--prompt", prompt,
+                   "--output", out_path,
+                   "--timeout", "420",
+                   "--prompt-prefix", prefix,
+                   "--meta", meta_path] + common
+            if parent:
+                cmd += ["--reference", os.path.join(board_dir, parent)]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True,
+                                      timeout=500)
+            finally:
+                _record_conv()
+            if proc.returncode != 0 or not os.path.exists(out_path):
+                tail = "\n".join((proc.stderr or "").strip().splitlines()[-3:])
+                raise RuntimeError(tail or "生成脚本失败（无输出）")
 
     with STATE_LOCK:
         if parent:  # plain generations have no ancestry to record
@@ -311,7 +364,7 @@ def _run_job(job):
     return out_name
 
 
-def _worker():
+def _worker(slot=0):
     while True:
         job = JOB_Q.get()
         delay = job.get("delaySec") or 0
@@ -323,10 +376,11 @@ def _worker():
             time.sleep(delay)
         with JOBS_LOCK:
             job["status"] = "running"
+            job["slot"] = slot
             job["startedAt"] = time.time()
             _save_jobs()
         try:
-            out = _run_job(job)
+            out = _run_job(job, slot)
             with JOBS_LOCK:
                 job["status"] = "done"
                 job["output"] = out
@@ -353,7 +407,8 @@ class Handler(BaseHTTPRequestHandler):
             # copy that also serves /api/state)
             self._send_json({"app": APP, "version": VERSION, "project": HERE,
                              "python": PYTHON, "pid": os.getpid(),
-                             "port": BOUND_PORT, "dataRoot": DATA_ROOT})
+                             "port": BOUND_PORT, "dataRoot": DATA_ROOT,
+                             "workers": WORKERS})
         elif path == "/api/state":
             board = _active_board()
             with JOBS_LOCK:
@@ -437,6 +492,32 @@ class Handler(BaseHTTPRequestHandler):
                 _save_jobs()
             JOB_Q.put(job)
             self._send_json(job)
+        elif path == "/api/delete":
+            name = os.path.basename(str(body.get("name", "")))
+            full = os.path.join(board["dir"], name)
+            if not name or os.path.splitext(name)[1].lower() not in IMAGE_EXTS \
+                    or not os.path.exists(full):
+                return self._send_error(404, "图片不存在")
+            with JOBS_LOCK:
+                if any(j.get("parent") == name and j.get("dir") == board["dir"]
+                       and j["status"] in ("queued", "waiting", "running")
+                       for j in JOBS):
+                    return self._send_error(409, "这张图有生成任务在进行，请先等它完成")
+            try:
+                os.remove(full)
+            except OSError as exc:
+                return self._send_error(500, f"删除失败: {exc}")
+            # Scrub the board's metadata for the removed image. Children keep
+            # their lineage entries — the frontend skips edges whose endpoint
+            # card is gone.
+            with STATE_LOCK:
+                for fname in ("layout.json", "annotations.json", "lineage.json"):
+                    p = os.path.join(board["dir"], fname)
+                    data = _read_json(p, {})
+                    if isinstance(data, dict) and name in data:
+                        data.pop(name)
+                        _write_json(p, data)
+            self._send_json({"ok": True})
         elif path == "/api/generate":
             # generation: with "name" the named image is a style reference;
             # without it the prompt(s) generate from scratch. A prompt LIST
@@ -647,14 +728,19 @@ def _write_server_file(port):
 
 
 def main():
+    global WORKERS
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=int(os.environ.get("BOARD_PORT", "8090")))
     ap.add_argument("--port-tries", type=int,
                     default=int(os.environ.get("BOARD_PORT_TRIES", "20")),
                     help="ports to try upward from --port when taken by other programs")
+    ap.add_argument("--workers", type=int, default=WORKERS,
+                    help="parallel generation workers, each with its own "
+                         "ChatGPT tab (BOARD_WORKERS, default 3)")
     ap.add_argument("--dir", default=os.environ.get("BOARD_DIR"),
                     help="single-board mode: watch exactly this directory")
     args = ap.parse_args()
+    WORKERS = max(1, args.workers)
 
     if args.dir:
         Handler.fixed_dir = os.path.abspath(os.path.expanduser(args.dir))
@@ -693,10 +779,11 @@ def main():
     global BOUND_PORT
     BOUND_PORT = srv.server_address[1]
     _write_server_file(BOUND_PORT)
-    # Requeue + worker only once we own the port: a second instance doing this
+    # Requeue + workers only once we own the port: a second instance doing this
     # while the first is alive would double-run every unfinished job.
     _load_jobs()
-    threading.Thread(target=_worker, daemon=True).start()
+    for slot in range(WORKERS):
+        threading.Thread(target=_worker, args=(slot,), daemon=True).start()
     print(f"board: http://127.0.0.1:{BOUND_PORT}  ({where})", flush=True)
     srv.serve_forever()
 

@@ -75,6 +75,7 @@
   .bar { display: flex; gap: 6px; margin-top: 7px; align-items: center; }
   .bar button { padding: 3px 10px; font-size: 11px; }
   .bar .status { font-size: 11px; color: var(--muted); margin-left: auto; }
+  .bar .b-del { color: var(--err); }
   .bar .status.err { color: var(--err); cursor: pointer; }
 
   #hud { position: fixed; left: 14px; top: 14px; z-index: 10; display: flex;
@@ -210,6 +211,7 @@ const I18N = {
     stQueued: '⏳ 排队中…',
     queueTail: n => `（队列 ${n}）`,
     stError: '⚠ 生成失败(点击关闭)',
+    delConfirm: n => `删除「${n}」？文件将从画布目录中移除`,
     refTag: p => `☆ 参考 ${p} 的风格`,
     editTag: p => `↳ 改自 ${p}`,
     imgCount: n => `${n} 张图`,
@@ -245,6 +247,7 @@ const I18N = {
     stQueued: '⏳ Queued…',
     queueTail: n => ` (queue ${n})`,
     stError: '⚠ Failed (click to dismiss)',
+    delConfirm: n => `Delete "${n}"? The file will be removed from the board directory`,
     refTag: p => `☆ style of ${p}`,
     editTag: p => `↳ edited from ${p}`,
     imgCount: n => `${n} image${n === 1 ? '' : 's'}`,
@@ -280,6 +283,7 @@ const I18N = {
     stQueued: '⏳ キュー待ち…',
     queueTail: n => `（キュー ${n}）`,
     stError: '⚠ 生成失敗（クリックで閉じる）',
+    delConfirm: n => `「${n}」を削除しますか？ファイルはキャンバスのディレクトリから削除されます`,
     refTag: p => `☆ ${p} のスタイルを参照`,
     editTag: p => `↳ ${p} から再生成`,
     imgCount: n => `${n} 枚`,
@@ -509,6 +513,7 @@ function addCard(name, fresh) {
       `<button class="b-ann">${t('annotate')}</button>` +
       `<button class="b-regen" disabled>${t('regen')}</button>` +
       `<button class="b-ref">${t('refGen')}</button>` +
+      `<button class="b-del">${t('del')}</button>` +
       `<span class="status"></span>` +
     `</div>`;
   position(card, name);
@@ -535,6 +540,17 @@ function addCard(name, fresh) {
     e.stopPropagation();
     openGenBox(e.clientX, e.clientY, name);
   });
+  card.querySelector('.b-del').addEventListener('click', async e => {
+    e.stopPropagation();
+    if (!confirm(t('delConfirm', name))) return;
+    try {
+      const r = await fetch('/api/delete', {
+        method: 'POST', body: JSON.stringify({ name }) });
+      if (!r.ok) { alert(await r.text()); return; }
+      removeCard(name);
+    } catch (err) { alert(t('reqFailed') + err); }
+    poll();
+  });
   makeDraggable(card, name);
   world.appendChild(card);
   cards[name] = card;
@@ -543,6 +559,18 @@ function addCard(name, fresh) {
     panToCard(name);
     setTimeout(() => card.classList.remove('fresh'), 4000);
   }
+}
+
+function removeCard(name) {
+  const card = cards[name];
+  if (card) card.remove();
+  delete cards[name];
+  delete layout[name];
+  delete annotations[name];
+  delete lineage[name];
+  if (annMode === name) annMode = null;
+  layoutDirty = true;
+  drawEdges();
 }
 
 function position(card, name) {
@@ -903,6 +931,11 @@ async function poll() {
 
     for (const it of s.images || []) {
       if (!cards[it.name]) addCard(it.name, firstLoadDone);
+    }
+    // images deleted elsewhere (another tab, the API) disappear here too
+    const present = new Set((s.images || []).map(it => it.name));
+    for (const n of Object.keys(cards)) {
+      if (!present.has(n)) removeCard(n);
     }
     for (const n of Object.keys(cards)) updateCard(n);
     drawEdges();

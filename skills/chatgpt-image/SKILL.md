@@ -65,8 +65,10 @@ script directly only as a fallback when the server cannot run, or for
 
    - Plain: `{"prompt": "specific English description"}`
    - Multiple images: `{"prompts": ["...", ...]}` (≤50; the server queues them
-     with random 30–120 s gaps — ALWAYS use this for batches, never loop
-     yourself)
+     with random 30–120 s gaps and runs up to 3 in parallel (`BOARD_WORKERS`),
+     each in its own dedicated ChatGPT tab — ALWAYS use this for batches,
+     never loop yourself. The debug Chrome holding several chatgpt.com tabs
+     is expected; don't close them.)
    - Style reference from a board image: add `"name": "<filename>"`
    - Local file as reference: first `POST /api/upload?name=<file>` with raw
      bytes (`curl --data-binary @file.png`), then generate with the returned
@@ -75,11 +77,17 @@ script directly only as a fallback when the server cannot run, or for
      pending annotations (you may write them for the user via
      `POST /api/annotations`: `{image: [{id,x,y,w,h,note,status:"pending"}]}`,
      coords normalized 0-1, point marks have w=h=0)
+   - Delete from the board: `POST /api/delete` `{"name":"<image>"}` — removes
+     the file and its layout/annotation/lineage entries (409 while a job is
+     still using the image; confirm with the user before deleting)
 
 4. **Await results**: poll `GET /api/state` → `jobs` until the job is `done`
    (`output` = filename) or `error` (reason included). ~1-5 min per image. For
    batches don't block — tell the user images will appear on the board as they
-   finish. Files land in the active board dir (`state.board.dir`).
+   finish. Files land in the active board dir (`state.board.dir`). Each job
+   records `conversationId` — the ChatGPT chat uuid it ran in (its stable
+   identity; interrupted jobs are auto-recovered from that conversation on
+   server restart instead of regenerating).
 
 ## Boards
 
@@ -97,7 +105,8 @@ script directly only as a fallback when the server cannot run, or for
 Wheel zoom, drag-empty pan, drag cards, double-click full size, drag local
 images in. Card buttons: 标注 (annotate: box + note) → 改图 (regenerate),
 参考生图 (style-reference; one prompt per line — multiple lines become a
-scheduled batch). Lineage: solid "↳ 改自" (edit), dashed "☆ 参考…风格" (ref).
+scheduled batch), 删除 (delete, with confirm). Lineage: solid "↳ 改自"
+(edit), dashed "☆ 参考…风格" (ref).
 
 ## Fallback: direct script (server unusable only)
 
@@ -110,7 +119,9 @@ PY="$PROJ/.venv/bin/python"; [ -x "$PY" ] || PY=python3   # needs playwright
 
 Progress on stderr, exit 0 = success; set Bash timeout ≥ `--timeout` + 60 s.
 If the script timed out but the image finished on the ChatGPT page, re-grab
-with `--grab-only` (pass any placeholder `--prompt`).
+with `--grab-only` (pass any placeholder `--prompt`); add
+`--conversation <uuid>` (from the job's `conversationId`) to grab from that
+specific chat.
 
 ## Troubleshooting
 
@@ -124,6 +135,7 @@ with `--grab-only` (pass any placeholder `--prompt`).
   `_submit` / `_IMAGE_JS` in `generate_chatgpt_image.py`.
 
 Env knobs: `BOARD_PORT` (8090, auto-increments if taken),
-`BOARD_PORT_TRIES` (20), `IMAGE_GEN_DATA` (data root), `CHATGPT_CDP_URL`
-(9222), `BATCH_INTERVAL` ("30-120"), `BOARD_DIR` (single-board mode),
-`CHATGPT_IMAGE_GEN_HOME` (project location).
+`BOARD_PORT_TRIES` (20), `BOARD_WORKERS` (3 parallel generations),
+`IMAGE_GEN_DATA` (data root), `CHATGPT_CDP_URL` (9222), `BATCH_INTERVAL`
+("30-120"), `BOARD_DIR` (single-board mode), `CHATGPT_IMAGE_GEN_HOME`
+(project location).

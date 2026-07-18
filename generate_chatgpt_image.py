@@ -9,6 +9,12 @@ PNG bytes to --output.
 It does NOT launch a browser (connect_over_cdp), so only `pip install playwright`
 is required -- no `playwright install`.
 
+Concurrency: pass --tab-slot N to give each parallel run its own dedicated
+chatgpt.com tab (tagged via window.name). After the prompt is sent the chat's
+conversation uuid (chatgpt.com/c/<uuid>) is captured — written to --meta as
+JSON, used to pin the wait loop to the right conversation, and usable later
+with --grab-only --conversation <uuid> to recover an interrupted run's image.
+
 Notes:
 - ChatGPT's web UI changes often; the selectors below are intentionally
   defensive with fallbacks. If generation stops working, update the selectors.
@@ -43,6 +49,17 @@ def main() -> None:
     ap.add_argument("--reference", default="", help="optional reference image to attach")
     ap.add_argument("--grab-only", action="store_true",
                     help="don't send a prompt; just re-grab the latest image on the current page")
+    ap.add_argument("--tab-slot", type=int, default=0,
+                    help="dedicated tab index for concurrent runs — each slot claims "
+                         "its own chatgpt.com tab (tagged via window.name) so parallel "
+                         "generations never share a composer")
+    ap.add_argument("--conversation", default="",
+                    help="with --grab-only: grab from this ChatGPT conversation uuid "
+                         "(navigates to chatgpt.com/c/<uuid> first) — used to recover "
+                         "an image whose job was interrupted after the prompt was sent")
+    ap.add_argument("--meta", default="",
+                    help="path to write {conversationId} JSON as soon as the chat's "
+                         "uuid is known (callers use it as the task's stable id)")
     args = ap.parse_args()
 
     prompt = args.prompt.strip()
@@ -83,30 +100,105 @@ def main() -> None:
             )
 
         context = browser.contexts[0] if browser.contexts else browser.new_context()
-        # Reuse an existing tab rather than opening a new one each run. Piling up
+        # Reuse existing tabs rather than opening one per run. Piling up
         # tabs/targets in the long-running Chrome is what eventually breaks the
-        # CDP session ("Browser context management is not supported"). We also do
-        # NOT close the page or the browser afterwards: page.close churns targets
-        # and browser.close() mutates the shared download-behavior state, both of
-        # which corrupt the next connect. Just disconnect the client (with-exit).
-        page = _pick_page(context)
+        # CDP session ("Browser context management is not supported"). Each
+        # concurrent worker claims ONE dedicated tab (by slot) and keeps reusing
+        # it. We also do NOT close the page or the browser afterwards: page.close
+        # churns targets and browser.close() mutates the shared download-behavior
+        # state, both of which corrupt the next connect. Just disconnect (with-exit).
+        page = _slot_page(context, args.tab_slot)
         if args.grab_only:
+            if args.conversation:
+                page = _find_conversation_page(context, args.conversation) or page
+                if args.conversation not in (page.url or ""):
+                    log(f"opening conversation {args.conversation} ...")
+                    try:
+                        page.goto(f"https://chatgpt.com/c/{args.conversation}",
+                                  wait_until="domcontentloaded")
+                        time.sleep(2.0)
+                    except Exception as exc:  # noqa: BLE001
+                        fail(f"could not open conversation {args.conversation}: {exc}")
             _grab(page, args.output, args.timeout)
         else:
-            _run(page, message, args.output, args.timeout, args.reference)
+            _run(page, message, args.output, args.timeout, args.reference,
+                 meta=args.meta)
 
 
-def _pick_page(context):
+def _slot_page(context, slot: int):
+    """Return the dedicated tab for this slot, claiming or creating it.
+
+    Concurrent runs must never share a tab (they would type into the same
+    composer and grab each other's images), so each slot owns one chatgpt.com
+    tab tagged via window.name — which, unlike other JS globals, survives
+    same-origin navigations. The claim check-and-set runs as one evaluate call
+    (atomic on the page's JS thread), so two processes racing for the same
+    untagged tab can't both win it."""
+    tag = f"canvas-slot-{slot}"
     for pg in context.pages:
         try:
-            if "chatgpt.com" in (pg.url or ""):
+            if pg.evaluate("() => window.name") == tag:
                 return pg
         except Exception:  # noqa: BLE001
-            pass
-    return context.pages[0] if context.pages else context.new_page()
+            continue
+    for pg in context.pages:  # claim an untagged chatgpt tab
+        try:
+            if "chatgpt.com" not in (pg.url or ""):
+                continue
+            claimed = pg.evaluate(
+                "(t) => { if (window.name && window.name.startsWith('canvas-slot-'))"
+                " return false; window.name = t; return true; }", tag)
+            if claimed:
+                return pg
+        except Exception:  # noqa: BLE001
+            continue
+    log(f"opening a new tab for slot {slot} ...")
+    pg = context.new_page()
+    try:
+        pg.goto("https://chatgpt.com/", wait_until="domcontentloaded")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        pg.evaluate("(t) => { window.name = t; }", tag)
+    except Exception:  # noqa: BLE001
+        pass
+    return pg
 
 
-def _run(page, message: str, output: str, timeout: int, reference: str = "") -> None:
+def _find_conversation_page(context, conv: str):
+    for pg in context.pages:
+        try:
+            if conv in (pg.url or ""):
+                return pg
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+_CONV_RE = re.compile(r"chatgpt\.com/c/([0-9a-fA-F-]{8,})")
+
+
+def _conversation_id(page):
+    try:
+        m = _CONV_RE.search(page.url or "")
+    except Exception:  # noqa: BLE001
+        return None
+    return m.group(1) if m else None
+
+
+def _write_meta(path: str, conv: str) -> None:
+    if not path or not conv:
+        return
+    try:
+        import json as _json
+        with open(path, "w", encoding="utf-8") as fh:
+            _json.dump({"conversationId": conv}, fh)
+    except OSError:
+        pass
+
+
+def _run(page, message: str, output: str, timeout: int, reference: str = "",
+         meta: str = "") -> None:
     page.set_default_timeout(30_000)
     log("opening chatgpt.com ...")
     try:
@@ -148,8 +240,24 @@ def _run(page, message: str, output: str, timeout: int, reference: str = "") -> 
         fail("typed the prompt but could not submit it (the send button never "
              "enabled — an attached image may still be uploading)")
 
+    # The SPA moves to /c/<uuid> shortly after the first message lands. That
+    # uuid is this generation's stable identity: callers store it as the task
+    # id, the wait loop below pins the tab to it, and interrupted jobs can be
+    # recovered later with --grab-only --conversation <uuid>.
+    conv = None
+    conv_deadline = time.time() + 15
+    while time.time() < conv_deadline and not conv:
+        conv = _conversation_id(page)
+        if not conv:
+            time.sleep(1.0)
+    if conv:
+        log(f"conversation: {conv}")
+        _write_meta(meta, conv)
+    else:
+        log("(could not detect the conversation uuid; continuing without it)")
+
     log(f"waiting up to {timeout}s for the generated image ...")
-    src = _wait_for_image(page, timeout, exclude=baseline)
+    src = _wait_for_image(page, timeout, exclude=baseline, conv=conv)
     if not src:
         fail(f"no image was produced within {timeout}s")
 
@@ -375,17 +483,29 @@ _IMAGE_JS = """
 """
 
 
-def _wait_for_image(page, timeout: int, require_settle: bool = True, exclude=None):
+def _wait_for_image(page, timeout: int, require_settle: bool = True, exclude=None,
+                    conv=None):
     """Return the src of the FINAL generated image. Waits until a stored-file
     image's src has been stable (no progressive change) for a few seconds.
     Srcs/file-ids in `exclude` (images that pre-date this run's prompt) are
     never returned — that's what stops a leftover image from a previous
-    conversation being grabbed as this run's result."""
+    conversation being grabbed as this run's result. When `conv` is known the
+    tab is pinned to that conversation: if anything navigates it away (the
+    user clicking around, another chat), we go back before grabbing anything."""
     deadline = time.time() + timeout
     last_src = None
     stable_since = 0.0
     latest = None
     while time.time() < deadline:
+        if conv and conv not in (page.url or ""):
+            log("tab left our conversation; navigating back ...")
+            try:
+                page.goto(f"https://chatgpt.com/c/{conv}",
+                          wait_until="domcontentloaded")
+                time.sleep(2.0)
+            except Exception:  # noqa: BLE001
+                pass
+            last_src, stable_since = None, 0.0  # re-settle after reload
         try:
             info = page.evaluate(_IMAGE_JS, list(exclude or []))
         except Exception:  # noqa: BLE001

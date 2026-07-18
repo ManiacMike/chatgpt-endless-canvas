@@ -20,8 +20,12 @@ with Lovart-style iteration tools:
   as reference
 - ⭐ **Style-reference generation** — use any image on the board as a style
   anchor and generate new subjects in the same look
-- 📋 **Scheduled batches** — submit a prompt list; jobs run serially with a
+- 📋 **Scheduled batches** — submit a prompt list; jobs are queued with a
   random 30–120 s pause between them (human-ish pacing, avoids rate limiting)
+- ⚡ **Parallel generation** — up to 3 images generate at once (`BOARD_WORKERS`),
+  each in its own dedicated ChatGPT tab; every job records its ChatGPT
+  conversation uuid, and interrupted jobs recover their image from that
+  conversation on restart instead of regenerating
 - 🌳 **Lineage tracking** — every generated image records its parent and the
   notes that produced it; the canvas draws the family tree (solid = edit,
   dashed = style reference)
@@ -91,6 +95,8 @@ when generation finished after the script timed out.
 | `POST /api/regenerate` | `{"name":"<image>"}` — regenerate from its pending annotations |
 | `POST /api/annotations` | write the full annotations object (normalized 0-1 coords) |
 | `POST /api/upload?name=x.png` | raw image bytes → active board |
+| `POST /api/delete` | `{"name":"<image>"}` — remove the image + its board metadata (409 while a job is using it) |
+| `GET /api/health` | identity: app, version, project path, python, pid, port, workers |
 | `GET/POST /api/boards` | list / `{"action":"create","name":..,"dir":..}` / `{"action":"open","id":..}` |
 | `POST /api/layout` | persist card positions (`?board=<id>` guards stale writes) |
 
@@ -115,6 +121,7 @@ falls back to the default path).
 |---|---|---|
 | `BOARD_PORT` | `8090` | board server port (skips ports taken by other programs — see `/api/health`) |
 | `BOARD_PORT_TRIES` | `20` | how many ports to try upward from `BOARD_PORT` |
+| `BOARD_WORKERS` | `3` | parallel generation workers, one dedicated ChatGPT tab each |
 | `IMAGE_GEN_DATA` | `~/Documents/chatgpt-endless-image-gen` | data root |
 | `CHATGPT_CDP_URL` | `http://127.0.0.1:9222` | Chrome debug endpoint |
 | `BATCH_INTERVAL` | `30-120` | random pause (s) between batch jobs |
