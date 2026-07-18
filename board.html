@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChatGPT 无限画板</title>
+<style>
+  :root {
+    --bg: #FAF9F5; --dot: #E3E0D3; --card: #FFFFFF; --border: #E8E6DC;
+    --text: #141413; --muted: #87867F; --faint: #B7B5A9;
+    --accent: #D97757; --accent-dark: #C4633F; --accent-soft: #FAEFE9;
+    --hover: #F0EEE5; --err: #B4442C;
+  }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI",
+      "PingFang SC", "Helvetica Neue", sans-serif; }
+  #viewport { position: fixed; inset: 0; cursor: grab; overflow: hidden;
+    background-image: radial-gradient(var(--dot) 1px, transparent 1px);
+    background-size: 28px 28px; }
+  #viewport.panning { cursor: grabbing; }
+  #world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  svg#edges { position: absolute; left: 0; top: 0; overflow: visible;
+    pointer-events: none; }
+  .edge { stroke: var(--accent); stroke-width: 2.5; fill: none; opacity: .45; }
+  .edge.ref { stroke-dasharray: 7 6; opacity: .35; }
+  #viewport.dropping::after { content: '松手放入图片'; position: fixed;
+    inset: 0; display: flex; align-items: center; justify-content: center;
+    font: 20px Georgia, "Songti SC", serif; color: var(--accent-dark);
+    background: rgba(250,239,233,.75); border: 3px dashed var(--accent);
+    pointer-events: none; }
+
+  .card { position: absolute; width: 320px; background: var(--card);
+    border: 1px solid var(--border); border-radius: 14px; padding: 10px;
+    box-shadow: 0 2px 8px rgba(20,20,19,.06); cursor: grab; user-select: none; }
+  .card:active { cursor: grabbing; }
+  .card .imgwrap { position: relative; }
+  .card img { width: 100%; display: block; border-radius: 9px;
+    pointer-events: none; background: var(--hover); min-height: 80px; }
+  .card .name { font-size: 11px; color: var(--muted); margin-top: 7px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .lineage-tag { font-size: 10px; color: var(--accent); margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card.fresh { animation: pop .7s cubic-bezier(.2,1.4,.4,1);
+    box-shadow: 0 0 0 2px var(--accent), 0 8px 24px rgba(217,119,87,.28); }
+  @keyframes pop { from { transform: scale(.5); opacity: 0; } }
+
+  .anns { position: absolute; inset: 0; pointer-events: none; }
+  .ann-box { position: absolute; border: 2px solid var(--accent);
+    border-radius: 5px; background: rgba(217,119,87,.10); }
+  .ann-box.done { border-color: #CDCABC; background: rgba(180,178,160,.08); }
+  .badge { position: absolute; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--accent); color: #fff; font-size: 11px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+    transform: translate(-50%,-50%); pointer-events: auto; cursor: pointer;
+    box-shadow: 0 2px 6px rgba(20,20,19,.25); }
+  .badge.done { background: var(--faint); }
+  .drawlayer { position: absolute; inset: 0; cursor: crosshair; }
+  .tempbox { position: absolute; border: 2px dashed var(--accent);
+    background: rgba(217,119,87,.12); pointer-events: none; }
+
+  button { background: var(--card); color: var(--text);
+    border: 1px solid #DAD7C7; border-radius: 8px; padding: 4px 12px;
+    font-size: 12px; cursor: pointer; font-family: inherit; }
+  button:hover { background: var(--hover); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.active, button.primary { background: var(--accent);
+    border-color: var(--accent); color: #fff; }
+  button.primary:hover, button.active:hover { background: var(--accent-dark); }
+
+  .bar { display: flex; gap: 6px; margin-top: 7px; align-items: center; }
+  .bar button { padding: 3px 10px; font-size: 11px; }
+  .bar .status { font-size: 11px; color: var(--muted); margin-left: auto; }
+  .bar .status.err { color: var(--err); cursor: pointer; }
+
+  #hud { position: fixed; left: 14px; top: 14px; z-index: 10; display: flex;
+    gap: 10px; align-items: center; background: rgba(255,255,255,.94);
+    border: 1px solid var(--border); border-radius: 12px; padding: 8px 14px;
+    box-shadow: 0 2px 10px rgba(20,20,19,.06); }
+  #hud .dot { width: 8px; height: 8px; border-radius: 50%; background: #59A08B; }
+  #hud .dot.err { background: var(--err); }
+  #hud .hint { color: var(--faint); font-size: 12px; }
+  #boardBtn { font-weight: 600; font-family: Georgia, "Songti SC", serif;
+    font-size: 13px; }
+  #count { color: var(--muted); }
+
+  #boardPanel { position: fixed; left: 14px; top: 62px; z-index: 20;
+    width: 300px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 14px; display: none;
+    box-shadow: 0 8px 30px rgba(20,20,19,.12); }
+  .bp-title { font-size: 11px; color: var(--faint); text-transform: uppercase;
+    letter-spacing: .05em; margin-bottom: 6px; }
+  .bp-item { padding: 7px 10px; border-radius: 8px; cursor: pointer; }
+  .bp-item:hover { background: var(--hover); }
+  .bp-item.active { background: var(--accent-soft); }
+  .bp-item.active .bp-name { color: var(--accent-dark); font-weight: 600; }
+  .bp-name { font-size: 13px; }
+  .bp-dir { font-size: 10px; color: var(--faint); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  .bp-divider { border-top: 1px solid var(--border); margin: 12px 0; }
+  #boardPanel input { width: 100%; box-sizing: border-box; margin-bottom: 6px;
+    background: var(--bg); color: var(--text); border: 1px solid #DAD7C7;
+    border-radius: 8px; padding: 6px 9px; font: 12px/1.5 inherit; }
+  #boardPanel input:focus, #editor textarea:focus { outline: none;
+    border-color: var(--accent); }
+
+  #editor { position: fixed; z-index: 30; width: 280px; background: var(--card);
+    border: 1px solid var(--border); border-radius: 14px; padding: 12px;
+    box-shadow: 0 8px 30px rgba(20,20,19,.15); display: none; }
+  #editor textarea { width: 100%; box-sizing: border-box; height: 72px;
+    background: var(--bg); color: var(--text); border: 1px solid #DAD7C7;
+    border-radius: 8px; padding: 7px; font: 12px/1.6 inherit; resize: vertical; }
+  #editor .row { display: flex; gap: 6px; margin-top: 9px; justify-content: flex-end; }
+  #editor .title { font-size: 11px; color: var(--muted); margin-bottom: 7px; }
+
+  #empty { position: fixed; inset: 0; display: flex; align-items: center;
+    justify-content: center; color: var(--faint); font-size: 17px;
+    font-family: Georgia, "Songti SC", serif; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="viewport"><div id="world">
+  <svg id="edges" width="10" height="10"></svg>
+</div></div>
+<div id="hud">
+  <span class="dot" id="dot"></span>
+  <button id="boardBtn">画布 ▾</button>
+  <span id="count">0 张图</span>
+  <button id="fit">适配全部</button>
+  <span class="hint">滚轮缩放 · 拖拽平移 · 「标注」写修改意见 → 「改图」生成新版本</span>
+</div>
+<div id="boardPanel">
+  <div class="bp-title">画布</div>
+  <div id="boardList"></div>
+  <div class="bp-divider"></div>
+  <div class="bp-title">新建画布</div>
+  <input id="nb-name" placeholder="画布名称">
+  <input id="nb-dir" placeholder="目录（留空自动创建；填已有目录=打开它）">
+  <button id="nb-create" class="primary" style="width:100%">新建 / 打开</button>
+</div>
+<div id="editor">
+  <div class="title">修改意见（改图时会连同位置一起发给 ChatGPT）</div>
+  <textarea id="ed-note" placeholder="例：把毛衣换成红色连衣裙"></textarea>
+  <div class="row">
+    <button id="ed-del">删除</button>
+    <button id="ed-cancel">取消</button>
+    <button id="ed-save" class="primary">保存</button>
+  </div>
+</div>
+<div id="genbox" style="position:fixed;z-index:30;width:300px;background:var(--card);
+  border:1px solid var(--border);border-radius:14px;padding:12px;display:none;
+  box-shadow:0 8px 30px rgba(20,20,19,.15);">
+  <div class="title" style="font-size:11px;color:var(--muted);margin-bottom:7px;">
+    以这张图为风格参考生成新内容。<b>每行一个 prompt</b>：多行会作为计划任务
+    排队，每张之间随机间隔 30–120 秒自动生成</div>
+  <textarea id="gb-prompt" placeholder="同样风格的一艘宇宙飞船&#10;同样风格的一颗小行星&#10;同样风格的一个空间站"
+    style="width:100%;box-sizing:border-box;height:110px;background:var(--bg);
+    color:var(--text);border:1px solid #DAD7C7;border-radius:8px;padding:7px;
+    font:12px/1.6 inherit;resize:vertical;"></textarea>
+  <div class="row" style="display:flex;gap:6px;margin-top:9px;align-items:center;">
+    <span id="gb-count" style="font-size:11px;color:var(--faint);margin-right:auto;"></span>
+    <button id="gb-cancel">取消</button>
+    <button id="gb-go" class="primary">生成</button>
+  </div>
+</div>
+<div id="empty">画布空空的 —— 生成的图片会自动出现在这里</div>
+
+<script>
+const viewport = document.getElementById('viewport');
+const world = document.getElementById('world');
+const edgesSvg = document.getElementById('edges');
+const CELL_W = 360, CELL_H = 460, CARD_W = 320;
+
+let view = { x: innerWidth / 2, y: innerHeight / 2, s: 1 };
+let layout = {};          // name -> {x, y}
+let annotations = {};     // name -> [{id, x, y, w, h, note, status}]
+let lineage = {};         // childName -> {parent, notes, prompt}
+let jobsByParent = {};    // parentName -> latest job
+let cards = {};           // name -> element
+const dismissed = new Set();
+let annMode = null;       // name of the card being annotated
+let layoutDirty = false;
+let firstLoadDone = false;
+let boardId = null;
+
+function apply() {
+  world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.s})`;
+}
+apply();
+
+// ---- pan & zoom -------------------------------------------------------
+viewport.addEventListener('pointerdown', e => {
+  if (e.target.closest('.card') || e.button !== 0) return;
+  viewport.classList.add('panning');
+  viewport.setPointerCapture(e.pointerId);
+  const start = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
+  const move = ev => {
+    view.x = start.vx + ev.clientX - start.x;
+    view.y = start.vy + ev.clientY - start.y;
+    apply();
+  };
+  const up = () => {
+    viewport.classList.remove('panning');
+    viewport.removeEventListener('pointermove', move);
+    viewport.removeEventListener('pointerup', up);
+  };
+  viewport.addEventListener('pointermove', move);
+  viewport.addEventListener('pointerup', up);
+});
+
+viewport.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
+}, { passive: false });
+
+function zoomAt(px, py, f) {
+  const s2 = Math.min(4, Math.max(0.04, view.s * f));
+  f = s2 / view.s;
+  view.x = px - (px - view.x) * f;
+  view.y = py - (py - view.y) * f;
+  view.s = s2;
+  apply();
+}
+
+function animateTo(target) {
+  world.style.transition = 'transform .5s ease';
+  view = target;
+  apply();
+  setTimeout(() => { world.style.transition = ''; }, 520);
+}
+
+function panToCard(name) {
+  const p = layout[name];
+  if (!p) return;
+  animateTo({
+    s: view.s,
+    x: innerWidth / 2 - (p.x + CARD_W / 2) * view.s,
+    y: innerHeight / 2 - (p.y + CELL_H / 2 - 40) * view.s,
+  });
+}
+
+document.getElementById('fit').onclick = fitAll;
+function fitAll() {
+  const names = Object.keys(cards);
+  if (!names.length) return;
+  let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+  for (const n of names) {
+    const p = layout[n];
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x + CARD_W); maxY = Math.max(maxY, p.y + CELL_H);
+  }
+  const pad = 80;
+  const s = Math.min(2, Math.min(
+    innerWidth / (maxX - minX + pad * 2),
+    innerHeight / (maxY - minY + pad * 2)));
+  animateTo({
+    s,
+    x: innerWidth / 2 - (minX + maxX) / 2 * s,
+    y: innerHeight / 2 - (minY + maxY) / 2 * s,
+  });
+}
+
+// ---- boards -----------------------------------------------------------
+const boardPanel = document.getElementById('boardPanel');
+document.getElementById('boardBtn').onclick = async e => {
+  e.stopPropagation();
+  if (boardPanel.style.display === 'block') { boardPanel.style.display = 'none'; return; }
+  await refreshBoards();
+  boardPanel.style.display = 'block';
+};
+document.addEventListener('click', e => {
+  if (!e.target.closest('#boardPanel') && !e.target.closest('#boardBtn')) {
+    boardPanel.style.display = 'none';
+  }
+});
+boardPanel.addEventListener('pointerdown', e => e.stopPropagation());
+
+async function refreshBoards() {
+  try {
+    const r = await (await fetch('/api/boards')).json();
+    const list = document.getElementById('boardList');
+    list.innerHTML = '';
+    for (const b of r.boards) {
+      const item = document.createElement('div');
+      item.className = 'bp-item' + (b.id === r.activeId ? ' active' : '');
+      item.innerHTML = `<div class="bp-name"></div><div class="bp-dir"></div>`;
+      item.querySelector('.bp-name').textContent = b.name;
+      item.querySelector('.bp-dir').textContent = b.dir;
+      item.title = b.dir;
+      item.onclick = async () => {
+        if (b.id !== r.activeId) {
+          await fetch('/api/boards', { method: 'POST',
+            body: JSON.stringify({ action: 'open', id: b.id }) });
+          boardPanel.style.display = 'none';
+          poll();
+        }
+      };
+      list.appendChild(item);
+    }
+  } catch (e) { /* board list is cosmetic; poll() reports connectivity */ }
+}
+
+document.getElementById('nb-create').onclick = async () => {
+  const name = document.getElementById('nb-name').value.trim();
+  const dir = document.getElementById('nb-dir').value.trim();
+  if (!name && !dir) return;
+  const r = await fetch('/api/boards', { method: 'POST',
+    body: JSON.stringify({ action: 'create', name, dir }) });
+  if (!r.ok) { alert(await r.text()); return; }
+  document.getElementById('nb-name').value = '';
+  document.getElementById('nb-dir').value = '';
+  boardPanel.style.display = 'none';
+  poll();
+};
+
+function resetWorld() {
+  for (const n of Object.keys(cards)) cards[n].remove();
+  cards = {};
+  layout = {}; annotations = {}; lineage = {}; jobsByParent = {};
+  edgesSvg.innerHTML = '';
+  annMode = null;
+  layoutDirty = false;
+  firstLoadDone = false;
+  closeEditor();
+  closeGenBox();
+  view = { x: innerWidth / 2, y: innerHeight / 2, s: 1 };
+  apply();
+}
+
+// ---- placement --------------------------------------------------------
+function* spiral() {
+  yield [0, 0];
+  for (let r = 1; ; r++) {
+    for (let i = -r; i <= r; i++) yield [i, -r];
+    for (let j = -r + 1; j <= r; j++) yield [r, j];
+    for (let i = r - 1; i >= -r; i--) yield [i, r];
+    for (let j = r - 1; j >= -r + 1; j--) yield [-r, j];
+  }
+}
+
+const cellOf = p => Math.round(p.x / CELL_W) + ',' + Math.round(p.y / CELL_H);
+const spotAt = (i, j) =>
+  ({ x: i * CELL_W - CARD_W / 2, y: j * CELL_H - CELL_H / 2 + 20 });
+
+function nextFreeSpot() {
+  const used = new Set(Object.values(layout).map(cellOf));
+  for (const [i, j] of spiral()) {
+    if (!used.has(i + ',' + j)) return spotAt(i, j);
+  }
+}
+
+function nextFreeSpotNear(parentName) {
+  const p = layout[parentName];
+  if (!p) return nextFreeSpot();
+  const used = new Set(Object.values(layout).map(cellOf));
+  const pi = Math.round(p.x / CELL_W), pj = Math.round(p.y / CELL_H);
+  for (const [di, dj] of [[1,0],[1,1],[1,-1],[0,1],[0,-1],[2,0],[2,1],[2,-1],[-1,0],[-1,1],[-1,-1]]) {
+    if (!used.has((pi + di) + ',' + (pj + dj))) return spotAt(pi + di, pj + dj);
+  }
+  return nextFreeSpot();
+}
+
+// ---- cards ------------------------------------------------------------
+function addCard(name, fresh) {
+  if (!layout[name]) {
+    const parent = lineage[name] && lineage[name].parent;
+    layout[name] = parent && layout[parent]
+      ? nextFreeSpotNear(parent) : nextFreeSpot();
+    layoutDirty = true;
+  }
+  const card = document.createElement('div');
+  card.className = 'card' + (fresh ? ' fresh' : '');
+  card.innerHTML =
+    `<div class="imgwrap">` +
+      `<img src="/images/${encodeURIComponent(name)}" alt="">` +
+      `<div class="anns"></div>` +
+    `</div>` +
+    `<div class="name">${name}</div>` +
+    `<div class="lineage-tag" style="display:none"></div>` +
+    `<div class="bar">` +
+      `<button class="b-ann">标注</button>` +
+      `<button class="b-regen" disabled>改图</button>` +
+      `<button class="b-ref">参考生图</button>` +
+      `<span class="status"></span>` +
+    `</div>`;
+  position(card, name);
+  card.querySelector('img').addEventListener('load', drawEdges);
+  card.addEventListener('dblclick', () =>
+    window.open('/images/' + encodeURIComponent(name), '_blank'));
+  card.querySelector('.b-ann').addEventListener('click', e => {
+    e.stopPropagation();
+    annMode = annMode === name ? null : name;
+    for (const n of Object.keys(cards)) updateCard(n);
+  });
+  card.querySelector('.b-regen').addEventListener('click', async e => {
+    e.stopPropagation();
+    const btn = e.target;
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/regenerate', {
+        method: 'POST', body: JSON.stringify({ name }) });
+      if (!r.ok) alert(await r.text());
+    } catch (err) { alert('请求失败: ' + err); }
+    poll();
+  });
+  card.querySelector('.b-ref').addEventListener('click', e => {
+    e.stopPropagation();
+    openGenBox(e.clientX, e.clientY, name);
+  });
+  makeDraggable(card, name);
+  world.appendChild(card);
+  cards[name] = card;
+  updateCard(name);
+  if (fresh) {
+    panToCard(name);
+    setTimeout(() => card.classList.remove('fresh'), 4000);
+  }
+}
+
+function position(card, name) {
+  card.style.left = layout[name].x + 'px';
+  card.style.top = layout[name].y + 'px';
+}
+
+function makeDraggable(card, name) {
+  card.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    if (e.target.closest('button, .badge, .drawlayer')) return;
+    e.stopPropagation();
+    card.setPointerCapture(e.pointerId);
+    const start = { x: e.clientX, y: e.clientY, cx: layout[name].x, cy: layout[name].y };
+    const move = ev => {
+      layout[name].x = start.cx + (ev.clientX - start.x) / view.s;
+      layout[name].y = start.cy + (ev.clientY - start.y) / view.s;
+      position(card, name);
+      drawEdges();
+      layoutDirty = true;
+    };
+    const up = () => {
+      card.removeEventListener('pointermove', move);
+      card.removeEventListener('pointerup', up);
+      saveLayoutSoon();
+    };
+    card.addEventListener('pointermove', move);
+    card.addEventListener('pointerup', up);
+  });
+}
+
+function updateCard(name) {
+  const card = cards[name];
+  if (!card) return;
+  const anns = annotations[name] || [];
+  renderAnns(card, name, anns);
+
+  const pending = anns.filter(a => a.status !== 'done').length;
+  const bAnn = card.querySelector('.b-ann');
+  const bRegen = card.querySelector('.b-regen');
+  const st = card.querySelector('.status');
+  bAnn.classList.toggle('active', annMode === name);
+  bRegen.textContent = pending ? `改图(${pending})` : '改图';
+  const pjobs = jobsByParent[name] || [];
+  const active = pjobs.filter(j =>
+    j.status === 'queued' || j.status === 'waiting' || j.status === 'running');
+  const busy = active.length > 0;
+  bRegen.disabled = !pending || busy;
+
+  st.className = 'status'; st.title = ''; st.onclick = null;
+  if (busy) {
+    const tail = active.length > 1 ? `（队列 ${active.length}）` : '';
+    if (active.some(j => j.status === 'running')) {
+      st.textContent = '🎨 生成中…' + tail;
+    } else if (active.some(j => j.status === 'waiting')) {
+      st.textContent = '⏱ 间隔等待中…' + tail;
+    } else {
+      st.textContent = '⏳ 排队中…' + tail;
+    }
+  } else {
+    const lastErr = [...pjobs].reverse().find(j => j.status === 'error');
+    if (lastErr && !dismissed.has(lastErr.id)) {
+      st.textContent = '⚠ 生成失败(点击关闭)';
+      st.classList.add('err');
+      st.title = lastErr.error || '';
+      st.onclick = () => { dismissed.add(lastErr.id); updateCard(name); };
+    } else {
+      st.textContent = '';
+    }
+  }
+
+  const lt = card.querySelector('.lineage-tag');
+  const info = lineage[name];
+  if (info) {
+    lt.style.display = '';
+    lt.textContent = info.kind === 'ref'
+      ? '☆ 参考 ' + info.parent + ' 的风格'
+      : '↳ 改自 ' + info.parent;
+    lt.title = (info.notes || []).join('\n');
+  } else {
+    lt.style.display = 'none';
+  }
+
+  const iw = card.querySelector('.imgwrap');
+  const dl = iw.querySelector('.drawlayer');
+  if (annMode === name && !dl) attachDrawLayer(iw, name);
+  if (annMode !== name && dl) dl.remove();
+}
+
+function renderAnns(card, name, anns) {
+  const layer = card.querySelector('.anns');
+  layer.innerHTML = '';
+  anns.forEach((a, i) => {
+    const done = a.status === 'done';
+    if (a.w > 0) {
+      const box = document.createElement('div');
+      box.className = 'ann-box' + (done ? ' done' : '');
+      box.style.left = a.x * 100 + '%';
+      box.style.top = a.y * 100 + '%';
+      box.style.width = a.w * 100 + '%';
+      box.style.height = a.h * 100 + '%';
+      layer.appendChild(box);
+    }
+    const b = document.createElement('div');
+    b.className = 'badge' + (done ? ' done' : '');
+    b.textContent = i + 1;
+    b.title = a.note || '';
+    b.style.left = a.x * 100 + '%';
+    b.style.top = a.y * 100 + '%';
+    b.addEventListener('pointerdown', e => e.stopPropagation());
+    b.addEventListener('click', e => {
+      e.stopPropagation();
+      openEditor(e.clientX, e.clientY, { name, ann: a, isNew: false });
+    });
+    layer.appendChild(b);
+  });
+}
+
+// ---- annotate (draw box / point) ---------------------------------------
+function attachDrawLayer(iw, name) {
+  const dl = document.createElement('div');
+  dl.className = 'drawlayer';
+  dl.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    dl.setPointerCapture(e.pointerId);
+    const r = dl.getBoundingClientRect();
+    const nx = ev => Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
+    const ny = ev => Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height));
+    const sx = nx(e), sy = ny(e);
+    let ex = sx, ey = sy;
+    const temp = document.createElement('div');
+    temp.className = 'tempbox';
+    dl.appendChild(temp);
+    const move = ev => {
+      ex = nx(ev); ey = ny(ev);
+      temp.style.left = Math.min(sx, ex) * 100 + '%';
+      temp.style.top = Math.min(sy, ey) * 100 + '%';
+      temp.style.width = Math.abs(ex - sx) * 100 + '%';
+      temp.style.height = Math.abs(ey - sy) * 100 + '%';
+    };
+    const up = ev => {
+      dl.removeEventListener('pointermove', move);
+      dl.removeEventListener('pointerup', up);
+      temp.remove();
+      let x = Math.min(sx, ex), y = Math.min(sy, ey);
+      let w = Math.abs(ex - sx), h = Math.abs(ey - sy);
+      if (w < 0.03 || h < 0.03) { x = sx; y = sy; w = 0; h = 0; }
+      openEditor(ev.clientX, ev.clientY, {
+        name,
+        ann: { id: 'a' + Date.now().toString(36), x, y, w, h,
+               note: '', status: 'pending' },
+        isNew: true,
+      });
+    };
+    dl.addEventListener('pointermove', move);
+    dl.addEventListener('pointerup', up);
+  });
+  iw.appendChild(dl);
+}
+
+// ---- note editor -------------------------------------------------------
+const editorEl = document.getElementById('editor');
+const edNote = document.getElementById('ed-note');
+let editorCtx = null;
+
+editorEl.addEventListener('pointerdown', e => e.stopPropagation());
+
+function openEditor(px, py, ctx) {
+  editorCtx = ctx;
+  editorEl.style.display = 'block';
+  editorEl.style.left = Math.min(px, innerWidth - 300) + 'px';
+  editorEl.style.top = Math.min(py + 8, innerHeight - 190) + 'px';
+  edNote.value = ctx.ann.note || '';
+  document.getElementById('ed-del').style.display = ctx.isNew ? 'none' : '';
+  edNote.focus();
+}
+
+function closeEditor() { editorEl.style.display = 'none'; editorCtx = null; }
+
+document.getElementById('ed-save').onclick = () => {
+  if (!editorCtx) return;
+  const { name, ann, isNew } = editorCtx;
+  const note = edNote.value.trim();
+  if (!note) return closeEditor();
+  ann.note = note;
+  if (isNew) {
+    (annotations[name] = annotations[name] || []).push(ann);
+    annMode = null;
+  }
+  postAnnotations();
+  closeEditor();
+  updateCard(name);
+};
+document.getElementById('ed-del').onclick = () => {
+  if (!editorCtx) return;
+  const { name, ann } = editorCtx;
+  annotations[name] = (annotations[name] || []).filter(a => a.id !== ann.id);
+  postAnnotations();
+  closeEditor();
+  updateCard(name);
+};
+document.getElementById('ed-cancel').onclick = () => {
+  const ctx = editorCtx;
+  closeEditor();
+  if (ctx && ctx.isNew) { annMode = null; updateCard(ctx.name); }
+};
+addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    const ctx = editorCtx;
+    closeEditor();
+    closeGenBox();
+    boardPanel.style.display = 'none';
+    if (annMode) { const n = annMode; annMode = null; updateCard(n); }
+    else if (ctx && ctx.isNew) updateCard(ctx.name);
+  }
+});
+
+function postAnnotations() {
+  fetch('/api/annotations?board=' + encodeURIComponent(boardId || ''), {
+    method: 'POST', body: JSON.stringify(annotations) }).catch(() => {});
+}
+
+// ---- style-reference generation ----------------------------------------
+const genboxEl = document.getElementById('genbox');
+const gbPrompt = document.getElementById('gb-prompt');
+let genboxName = null;
+
+genboxEl.addEventListener('pointerdown', e => e.stopPropagation());
+
+const gbLines = () =>
+  gbPrompt.value.split('\n').map(s => s.trim()).filter(Boolean);
+
+function openGenBox(px, py, name) {
+  genboxName = name;
+  genboxEl.style.display = 'block';
+  genboxEl.style.left = Math.min(px, innerWidth - 320) + 'px';
+  genboxEl.style.top = Math.min(py + 8, innerHeight - 240) + 'px';
+  gbPrompt.value = '';
+  updateGbCount();
+  gbPrompt.focus();
+}
+function closeGenBox() { genboxEl.style.display = 'none'; genboxName = null; }
+
+function updateGbCount() {
+  const n = gbLines().length;
+  document.getElementById('gb-count').textContent =
+    n > 1 ? `${n} 条 · 将按随机间隔排队生成` : '';
+  document.getElementById('gb-go').textContent =
+    n > 1 ? `生成 ${n} 张` : '生成';
+}
+gbPrompt.addEventListener('input', updateGbCount);
+
+document.getElementById('gb-cancel').onclick = closeGenBox;
+document.getElementById('gb-go').onclick = async () => {
+  const name = genboxName;
+  const prompts = gbLines();
+  if (!name || !prompts.length) return;
+  closeGenBox();
+  try {
+    const r = await fetch('/api/generate', {
+      method: 'POST', body: JSON.stringify({ name, prompts }) });
+    if (!r.ok) alert(await r.text());
+  } catch (err) { alert('请求失败: ' + err); }
+  poll();
+};
+
+// ---- drag & drop upload -------------------------------------------------
+let dragDepth = 0;
+addEventListener('dragenter', e => {
+  if ([...(e.dataTransfer?.types || [])].includes('Files')) {
+    dragDepth++;
+    viewport.classList.add('dropping');
+  }
+});
+addEventListener('dragleave', () => {
+  if (--dragDepth <= 0) { dragDepth = 0; viewport.classList.remove('dropping'); }
+});
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', async e => {
+  e.preventDefault();
+  dragDepth = 0;
+  viewport.classList.remove('dropping');
+  const files = [...(e.dataTransfer?.files || [])]
+    .filter(f => /^image\//.test(f.type));
+  if (!files.length) return;
+  const wx = (e.clientX - view.x) / view.s - CARD_W / 2;
+  const wy = (e.clientY - view.y) / view.s - 100;
+  let i = 0;
+  for (const f of files) {
+    try {
+      const r = await fetch('/api/upload?name=' + encodeURIComponent(f.name), {
+        method: 'POST', body: f });
+      if (!r.ok) { alert(await r.text()); continue; }
+      const { name } = await r.json();
+      layout[name] = { x: wx + i * 44, y: wy + i * 44 };
+      layoutDirty = true;
+      i++;
+    } catch (err) { alert('上传失败: ' + err); }
+  }
+  saveLayoutSoon();
+  poll();
+});
+
+// ---- lineage edges -----------------------------------------------------
+function drawEdges() {
+  let html = '';
+  for (const [child, info] of Object.entries(lineage)) {
+    const pc = cards[info.parent], cc = cards[child];
+    if (!pc || !cc || !layout[info.parent] || !layout[child]) continue;
+    const pp = layout[info.parent], cp = layout[child];
+    const ph = pc.offsetHeight || 400, ch = cc.offsetHeight || 400;
+    const x1 = pp.x + CARD_W + 8, y1 = pp.y + ph / 2;
+    const x2 = cp.x - 8, y2 = cp.y + ch / 2;
+    const dx = Math.max(40, Math.abs(x2 - x1) / 2);
+    const cls = info.kind === 'ref' ? 'edge ref' : 'edge';
+    html += `<path class="${cls}" d="M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}"/>`;
+  }
+  edgesSvg.innerHTML = html;
+}
+
+// ---- sync -------------------------------------------------------------
+let saveTimer = null;
+function saveLayoutSoon() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    if (!layoutDirty) return;
+    layoutDirty = false;
+    fetch('/api/layout?board=' + encodeURIComponent(boardId || ''), {
+      method: 'POST', body: JSON.stringify(layout) })
+      .catch(() => { layoutDirty = true; });
+  }, 600);
+}
+
+async function poll() {
+  const dot = document.getElementById('dot');
+  try {
+    const s = await (await fetch('/api/state')).json();
+    dot.classList.remove('err');
+
+    if (s.board && s.board.id !== boardId) {
+      boardId = s.board.id;
+      resetWorld();
+      document.getElementById('boardBtn').textContent = s.board.name + ' ▾';
+      document.title = s.board.name + ' · ChatGPT 无限画板';
+    }
+
+    for (const [k, v] of Object.entries(s.layout || {})) {
+      if (!layout[k]) layout[k] = v;
+    }
+    annotations = s.annotations || {};
+    lineage = s.lineage || {};
+    jobsByParent = {};
+    for (const j of s.jobs || []) {
+      (jobsByParent[j.parent] = jobsByParent[j.parent] || []).push(j);
+    }
+
+    for (const it of s.images || []) {
+      if (!cards[it.name]) addCard(it.name, firstLoadDone);
+    }
+    for (const n of Object.keys(cards)) updateCard(n);
+    drawEdges();
+
+    const count = (s.images || []).length;
+    const activeJobs = (s.jobs || []).filter(j =>
+      j.status === 'queued' || j.status === 'waiting' || j.status === 'running').length;
+    document.getElementById('count').textContent =
+      count + ' 张图' + (activeJobs ? ` · ⏳ ${activeJobs} 个任务` : '');
+    document.getElementById('empty').style.display = count ? 'none' : 'flex';
+    if (!firstLoadDone) {
+      firstLoadDone = true;
+      if (count) setTimeout(fitAll, 300);
+    }
+    saveLayoutSoon();
+  } catch (e) {
+    dot.classList.add('err');
+  }
+}
+
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>
