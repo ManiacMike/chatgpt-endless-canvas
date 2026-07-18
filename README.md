@@ -1,11 +1,18 @@
 # ChatGPT Endless Image Gen
 
+> ### 🆓 Burns zero Codex / API quota
+> An infinite-canvas image board that generates through the **ChatGPT web app**
+> you already pay for — no API key, no per-image billing, and none of your
+> Codex quota.
+
 **[中文文档 →](README.zh-CN.md)**
 
 An infinite-canvas image board powered by the **ChatGPT web app** — no paid API.
 It drives your own logged-in chatgpt.com session over Chrome DevTools Protocol
 (CDP) to generate images, and streams every result onto a local pan/zoom canvas
 with Lovart-style iteration tools:
+
+![Board example](example.png)
 
 - 🎨 **Infinite canvas** — pan, zoom, drag cards, layouts persist per board
 - ✏️ **Annotate → Regenerate** — draw a box/point on an image, write a revision
@@ -22,6 +29,8 @@ with Lovart-style iteration tools:
   `layout.json` + `annotations.json` + `lineage.json`)
 - 📥 **Drag & drop** — drop local images onto the canvas to bring them into the
   workflow
+- 🌐 **Trilingual UI** — switch the board between 中文 / English / 日本語 right
+  from the toolbar (remembered per browser)
 - 🤖 **Claude Code skill included** — let Claude submit prompts, batches, and
   edits to the board for you
 

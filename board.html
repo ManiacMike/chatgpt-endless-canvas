@@ -24,7 +24,7 @@
     pointer-events: none; }
   .edge { stroke: var(--accent); stroke-width: 2.5; fill: none; opacity: .45; }
   .edge.ref { stroke-dasharray: 7 6; opacity: .35; }
-  #viewport.dropping::after { content: '松手放入图片'; position: fixed;
+  #viewport.dropping::after { content: attr(data-drop-hint); position: fixed;
     inset: 0; display: flex; align-items: center; justify-content: center;
     font: 20px Georgia, "Songti SC", serif; color: var(--accent-dark);
     background: rgba(250,239,233,.75); border: 3px dashed var(--accent);
@@ -67,6 +67,10 @@
   button.active, button.primary { background: var(--accent);
     border-color: var(--accent); color: #fff; }
   button.primary:hover, button.active:hover { background: var(--accent-dark); }
+
+  #langSel { background: var(--card); color: var(--text);
+    border: 1px solid #DAD7C7; border-radius: 8px; padding: 3px 6px;
+    font-size: 11px; font-family: inherit; cursor: pointer; }
 
   .bar { display: flex; gap: 6px; margin-top: 7px; align-items: center; }
   .bar button { padding: 3px 10px; font-size: 11px; }
@@ -119,7 +123,7 @@
 </style>
 </head>
 <body>
-<div id="viewport"><div id="world">
+<div id="viewport" data-drop-hint="松手放入图片"><div id="world">
   <svg id="edges" width="10" height="10"></svg>
 </div></div>
 <div id="hud">
@@ -127,19 +131,24 @@
   <button id="boardBtn">画布 ▾</button>
   <span id="count">0 张图</span>
   <button id="fit">适配全部</button>
-  <span class="hint">滚轮缩放 · 拖拽平移 · 「标注」写修改意见 → 「改图」生成新版本</span>
+  <select id="langSel" title="Language">
+    <option value="zh">中文</option>
+    <option value="en">English</option>
+    <option value="ja">日本語</option>
+  </select>
+  <span class="hint" id="hint">滚轮缩放 · 拖拽平移 · 「标注」写修改意见 → 「改图」生成新版本</span>
 </div>
 <div id="boardPanel">
-  <div class="bp-title">画布</div>
+  <div class="bp-title" id="bp-boards-title">画布</div>
   <div id="boardList"></div>
   <div class="bp-divider"></div>
-  <div class="bp-title">新建画布</div>
+  <div class="bp-title" id="bp-new-title">新建画布</div>
   <input id="nb-name" placeholder="画布名称">
   <input id="nb-dir" placeholder="目录（留空自动创建；填已有目录=打开它）">
   <button id="nb-create" class="primary" style="width:100%">新建 / 打开</button>
 </div>
 <div id="editor">
-  <div class="title">修改意见（改图时会连同位置一起发给 ChatGPT）</div>
+  <div class="title" id="ed-title">修改意见（改图时会连同位置一起发给 ChatGPT）</div>
   <textarea id="ed-note" placeholder="例：把毛衣换成红色连衣裙"></textarea>
   <div class="row">
     <button id="ed-del">删除</button>
@@ -150,7 +159,7 @@
 <div id="genbox" style="position:fixed;z-index:30;width:300px;background:var(--card);
   border:1px solid var(--border);border-radius:14px;padding:12px;display:none;
   box-shadow:0 8px 30px rgba(20,20,19,.15);">
-  <div class="title" style="font-size:11px;color:var(--muted);margin-bottom:7px;">
+  <div class="title" id="gb-title" style="font-size:11px;color:var(--muted);margin-bottom:7px;">
     以这张图为风格参考生成新内容。<b>每行一个 prompt</b>：多行会作为计划任务
     排队，每张之间随机间隔 30–120 秒自动生成</div>
   <textarea id="gb-prompt" placeholder="同样风格的一艘宇宙飞船&#10;同样风格的一颗小行星&#10;同样风格的一个空间站"
@@ -171,6 +180,123 @@ const world = document.getElementById('world');
 const edgesSvg = document.getElementById('edges');
 const CELL_W = 360, CELL_H = 460, CARD_W = 320;
 
+// ---- i18n -------------------------------------------------------------
+const I18N = {
+  zh: {
+    title: 'ChatGPT 无限画板',
+    dropHint: '松手放入图片',
+    boards: '画布',
+    newBoard: '新建画布',
+    nbName: '画布名称',
+    nbDir: '目录（留空自动创建；填已有目录=打开它）',
+    nbCreate: '新建 / 打开',
+    fit: '适配全部',
+    hint: '滚轮缩放 · 拖拽平移 · 「标注」写修改意见 → 「改图」生成新版本',
+    edTitle: '修改意见（改图时会连同位置一起发给 ChatGPT）',
+    edPlaceholder: '例：把毛衣换成红色连衣裙',
+    del: '删除', cancel: '取消', save: '保存',
+    gbTitle: '以这张图为风格参考生成新内容。<b>每行一个 prompt</b>：多行会作为计划任务排队，每张之间随机间隔 30–120 秒自动生成',
+    gbPlaceholder: '同样风格的一艘宇宙飞船\n同样风格的一颗小行星\n同样风格的一个空间站',
+    generate: '生成',
+    genN: n => `生成 ${n} 张`,
+    gbCount: n => `${n} 条 · 将按随机间隔排队生成`,
+    empty: '画布空空的 —— 生成的图片会自动出现在这里',
+    annotate: '标注',
+    regen: '改图',
+    regenN: n => `改图(${n})`,
+    refGen: '参考生图',
+    stRunning: '🎨 生成中…',
+    stWaiting: '⏱ 间隔等待中…',
+    stQueued: '⏳ 排队中…',
+    queueTail: n => `（队列 ${n}）`,
+    stError: '⚠ 生成失败(点击关闭)',
+    refTag: p => `☆ 参考 ${p} 的风格`,
+    editTag: p => `↳ 改自 ${p}`,
+    imgCount: n => `${n} 张图`,
+    jobsTail: n => ` · ⏳ ${n} 个任务`,
+    reqFailed: '请求失败: ',
+    uploadFailed: '上传失败: ',
+  },
+  en: {
+    title: 'ChatGPT Endless Canvas',
+    dropHint: 'Drop images here',
+    boards: 'Boards',
+    newBoard: 'New board',
+    nbName: 'Board name',
+    nbDir: 'Directory (blank = auto-create; existing dir = open it)',
+    nbCreate: 'Create / Open',
+    fit: 'Fit all',
+    hint: 'Scroll to zoom · drag to pan · “Annotate” to mark changes → “Redo” for a new version',
+    edTitle: 'Revision note (sent to ChatGPT along with its position)',
+    edPlaceholder: 'e.g. change the sweater to a red dress',
+    del: 'Delete', cancel: 'Cancel', save: 'Save',
+    gbTitle: 'Generate new content with this image as a style reference. <b>One prompt per line</b>: multiple lines are queued as scheduled jobs with a random 30–120 s pause between each',
+    gbPlaceholder: 'a spaceship in the same style\nan asteroid in the same style\na space station in the same style',
+    generate: 'Generate',
+    genN: n => `Generate ${n}`,
+    gbCount: n => `${n} prompts · queued with random pauses`,
+    empty: 'The canvas is empty — generated images will show up here',
+    annotate: 'Annotate',
+    regen: 'Redo',
+    regenN: n => `Redo (${n})`,
+    refGen: 'Style ref',
+    stRunning: '🎨 Generating…',
+    stWaiting: '⏱ Pausing…',
+    stQueued: '⏳ Queued…',
+    queueTail: n => ` (queue ${n})`,
+    stError: '⚠ Failed (click to dismiss)',
+    refTag: p => `☆ style of ${p}`,
+    editTag: p => `↳ edited from ${p}`,
+    imgCount: n => `${n} image${n === 1 ? '' : 's'}`,
+    jobsTail: n => ` · ⏳ ${n} job${n === 1 ? '' : 's'}`,
+    reqFailed: 'Request failed: ',
+    uploadFailed: 'Upload failed: ',
+  },
+  ja: {
+    title: 'ChatGPT 無限キャンバス',
+    dropHint: 'ここに画像をドロップ',
+    boards: 'キャンバス',
+    newBoard: '新規キャンバス',
+    nbName: 'キャンバス名',
+    nbDir: 'ディレクトリ（空欄=自動作成、既存パス=開く）',
+    nbCreate: '作成 / 開く',
+    fit: '全体表示',
+    hint: 'ホイールでズーム · ドラッグで移動 · 「注釈」で修正指示 → 「再生成」で新バージョン',
+    edTitle: '修正指示（再生成時に位置情報と一緒に ChatGPT へ送信）',
+    edPlaceholder: '例：セーターを赤いワンピースに変える',
+    del: '削除', cancel: 'キャンセル', save: '保存',
+    gbTitle: 'この画像をスタイル参照にして新しい画像を生成。<b>1 行 1 プロンプト</b>：複数行はジョブとしてキューに入り、各生成の間に 30–120 秒のランダム間隔を置きます',
+    gbPlaceholder: '同じスタイルの宇宙船\n同じスタイルの小惑星\n同じスタイルの宇宙ステーション',
+    generate: '生成',
+    genN: n => `${n} 枚生成`,
+    gbCount: n => `${n} 件 · ランダム間隔でキュー実行`,
+    empty: 'キャンバスは空です —— 生成された画像がここに表示されます',
+    annotate: '注釈',
+    regen: '再生成',
+    regenN: n => `再生成(${n})`,
+    refGen: '参照生成',
+    stRunning: '🎨 生成中…',
+    stWaiting: '⏱ 間隔待機中…',
+    stQueued: '⏳ キュー待ち…',
+    queueTail: n => `（キュー ${n}）`,
+    stError: '⚠ 生成失敗（クリックで閉じる）',
+    refTag: p => `☆ ${p} のスタイルを参照`,
+    editTag: p => `↳ ${p} から再生成`,
+    imgCount: n => `${n} 枚`,
+    jobsTail: n => ` · ⏳ ${n} 件のジョブ`,
+    reqFailed: 'リクエスト失敗: ',
+    uploadFailed: 'アップロード失敗: ',
+  },
+};
+let lang = localStorage.getItem('boardLang') ||
+  ((navigator.language || '').startsWith('zh') ? 'zh' :
+   (navigator.language || '').startsWith('ja') ? 'ja' : 'en');
+if (!I18N[lang]) lang = 'zh';
+const t = (k, ...a) => {
+  const v = I18N[lang][k];
+  return typeof v === 'function' ? v(...a) : v;
+};
+
 let view = { x: innerWidth / 2, y: innerHeight / 2, s: 1 };
 let layout = {};          // name -> {x, y}
 let annotations = {};     // name -> [{id, x, y, w, h, note, status}]
@@ -182,6 +308,8 @@ let annMode = null;       // name of the card being annotated
 let layoutDirty = false;
 let firstLoadDone = false;
 let boardId = null;
+let boardName = null;
+let lastCount = 0, lastJobs = 0;
 
 function apply() {
   world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.s})`;
@@ -378,9 +506,9 @@ function addCard(name, fresh) {
     `<div class="name">${name}</div>` +
     `<div class="lineage-tag" style="display:none"></div>` +
     `<div class="bar">` +
-      `<button class="b-ann">标注</button>` +
-      `<button class="b-regen" disabled>改图</button>` +
-      `<button class="b-ref">参考生图</button>` +
+      `<button class="b-ann">${t('annotate')}</button>` +
+      `<button class="b-regen" disabled>${t('regen')}</button>` +
+      `<button class="b-ref">${t('refGen')}</button>` +
       `<span class="status"></span>` +
     `</div>`;
   position(card, name);
@@ -400,7 +528,7 @@ function addCard(name, fresh) {
       const r = await fetch('/api/regenerate', {
         method: 'POST', body: JSON.stringify({ name }) });
       if (!r.ok) alert(await r.text());
-    } catch (err) { alert('请求失败: ' + err); }
+    } catch (err) { alert(t('reqFailed') + err); }
     poll();
   });
   card.querySelector('.b-ref').addEventListener('click', e => {
@@ -457,7 +585,7 @@ function updateCard(name) {
   const bRegen = card.querySelector('.b-regen');
   const st = card.querySelector('.status');
   bAnn.classList.toggle('active', annMode === name);
-  bRegen.textContent = pending ? `改图(${pending})` : '改图';
+  bRegen.textContent = pending ? t('regenN', pending) : t('regen');
   const pjobs = jobsByParent[name] || [];
   const active = pjobs.filter(j =>
     j.status === 'queued' || j.status === 'waiting' || j.status === 'running');
@@ -466,18 +594,18 @@ function updateCard(name) {
 
   st.className = 'status'; st.title = ''; st.onclick = null;
   if (busy) {
-    const tail = active.length > 1 ? `（队列 ${active.length}）` : '';
+    const tail = active.length > 1 ? t('queueTail', active.length) : '';
     if (active.some(j => j.status === 'running')) {
-      st.textContent = '🎨 生成中…' + tail;
+      st.textContent = t('stRunning') + tail;
     } else if (active.some(j => j.status === 'waiting')) {
-      st.textContent = '⏱ 间隔等待中…' + tail;
+      st.textContent = t('stWaiting') + tail;
     } else {
-      st.textContent = '⏳ 排队中…' + tail;
+      st.textContent = t('stQueued') + tail;
     }
   } else {
     const lastErr = [...pjobs].reverse().find(j => j.status === 'error');
     if (lastErr && !dismissed.has(lastErr.id)) {
-      st.textContent = '⚠ 生成失败(点击关闭)';
+      st.textContent = t('stError');
       st.classList.add('err');
       st.title = lastErr.error || '';
       st.onclick = () => { dismissed.add(lastErr.id); updateCard(name); };
@@ -491,8 +619,8 @@ function updateCard(name) {
   if (info) {
     lt.style.display = '';
     lt.textContent = info.kind === 'ref'
-      ? '☆ 参考 ' + info.parent + ' 的风格'
-      : '↳ 改自 ' + info.parent;
+      ? t('refTag', info.parent)
+      : t('editTag', info.parent);
     lt.title = (info.notes || []).join('\n');
   } else {
     lt.style.display = 'none';
@@ -662,9 +790,9 @@ function closeGenBox() { genboxEl.style.display = 'none'; genboxName = null; }
 function updateGbCount() {
   const n = gbLines().length;
   document.getElementById('gb-count').textContent =
-    n > 1 ? `${n} 条 · 将按随机间隔排队生成` : '';
+    n > 1 ? t('gbCount', n) : '';
   document.getElementById('gb-go').textContent =
-    n > 1 ? `生成 ${n} 张` : '生成';
+    n > 1 ? t('genN', n) : t('generate');
 }
 gbPrompt.addEventListener('input', updateGbCount);
 
@@ -678,7 +806,7 @@ document.getElementById('gb-go').onclick = async () => {
     const r = await fetch('/api/generate', {
       method: 'POST', body: JSON.stringify({ name, prompts }) });
     if (!r.ok) alert(await r.text());
-  } catch (err) { alert('请求失败: ' + err); }
+  } catch (err) { alert(t('reqFailed') + err); }
   poll();
 };
 
@@ -713,7 +841,7 @@ addEventListener('drop', async e => {
       layout[name] = { x: wx + i * 44, y: wy + i * 44 };
       layoutDirty = true;
       i++;
-    } catch (err) { alert('上传失败: ' + err); }
+    } catch (err) { alert(t('uploadFailed') + err); }
   }
   saveLayoutSoon();
   poll();
@@ -757,9 +885,10 @@ async function poll() {
 
     if (s.board && s.board.id !== boardId) {
       boardId = s.board.id;
+      boardName = s.board.name;
       resetWorld();
-      document.getElementById('boardBtn').textContent = s.board.name + ' ▾';
-      document.title = s.board.name + ' · ChatGPT 无限画板';
+      document.getElementById('boardBtn').textContent = boardName + ' ▾';
+      document.title = boardName + ' · ' + t('title');
     }
 
     for (const [k, v] of Object.entries(s.layout || {})) {
@@ -778,15 +907,14 @@ async function poll() {
     for (const n of Object.keys(cards)) updateCard(n);
     drawEdges();
 
-    const count = (s.images || []).length;
-    const activeJobs = (s.jobs || []).filter(j =>
+    lastCount = (s.images || []).length;
+    lastJobs = (s.jobs || []).filter(j =>
       j.status === 'queued' || j.status === 'waiting' || j.status === 'running').length;
-    document.getElementById('count').textContent =
-      count + ' 张图' + (activeJobs ? ` · ⏳ ${activeJobs} 个任务` : '');
-    document.getElementById('empty').style.display = count ? 'none' : 'flex';
+    renderCount();
+    document.getElementById('empty').style.display = lastCount ? 'none' : 'flex';
     if (!firstLoadDone) {
       firstLoadDone = true;
-      if (count) setTimeout(fitAll, 300);
+      if (lastCount) setTimeout(fitAll, 300);
     }
     saveLayoutSoon();
   } catch (e) {
@@ -794,6 +922,51 @@ async function poll() {
   }
 }
 
+// ---- language switching ------------------------------------------------
+function renderCount() {
+  document.getElementById('count').textContent =
+    t('imgCount', lastCount) + (lastJobs ? t('jobsTail', lastJobs) : '');
+}
+
+function applyLang() {
+  document.documentElement.lang = lang;
+  document.getElementById('langSel').value = lang;
+  viewport.dataset.dropHint = t('dropHint');
+  document.getElementById('boardBtn').textContent = (boardName || t('boards')) + ' ▾';
+  document.title = boardName ? boardName + ' · ' + t('title') : t('title');
+  document.getElementById('fit').textContent = t('fit');
+  document.getElementById('hint').textContent = t('hint');
+  document.getElementById('bp-boards-title').textContent = t('boards');
+  document.getElementById('bp-new-title').textContent = t('newBoard');
+  document.getElementById('nb-name').placeholder = t('nbName');
+  document.getElementById('nb-dir').placeholder = t('nbDir');
+  document.getElementById('nb-create').textContent = t('nbCreate');
+  document.getElementById('ed-title').textContent = t('edTitle');
+  edNote.placeholder = t('edPlaceholder');
+  document.getElementById('ed-del').textContent = t('del');
+  document.getElementById('ed-cancel').textContent = t('cancel');
+  document.getElementById('ed-save').textContent = t('save');
+  document.getElementById('gb-title').innerHTML = t('gbTitle');
+  gbPrompt.placeholder = t('gbPlaceholder');
+  document.getElementById('gb-cancel').textContent = t('cancel');
+  document.getElementById('empty').textContent = t('empty');
+  renderCount();
+  updateGbCount();
+  for (const n of Object.keys(cards)) {
+    const c = cards[n];
+    c.querySelector('.b-ann').textContent = t('annotate');
+    c.querySelector('.b-ref').textContent = t('refGen');
+    updateCard(n);
+  }
+}
+
+document.getElementById('langSel').onchange = e => {
+  lang = e.target.value;
+  localStorage.setItem('boardLang', lang);
+  applyLang();
+};
+
+applyLang();
 poll();
 setInterval(poll, 2000);
 </script>
